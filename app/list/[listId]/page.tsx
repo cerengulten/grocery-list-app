@@ -1,12 +1,11 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { useRouter } from "next/navigation";
-import { db, auth } from "../src/firebase";
+import { useParams, useRouter } from "next/navigation";
+import { auth, db } from "../../../src/firebase";
 import {
   collection,
   addDoc,
-  query,
   onSnapshot,
   doc,
   updateDoc,
@@ -19,85 +18,75 @@ interface GroceryItem {
   checked: boolean;
 }
 
-export default function Home() {
+export default function GroceryListPage() {
+  const router = useRouter();
+  const params = useParams();
+  const listId = params.listId;
   const [user, setUser] = useState<any>(null);
   const [items, setItems] = useState<GroceryItem[]>([]);
   const [newItem, setNewItem] = useState("");
-  const router = useRouter();
 
-  // 🔑 Auth listener
+  // Auth listener
   useEffect(() => {
     const unsubscribe = auth.onAuthStateChanged((u) => {
-      if (u) {
-        setUser(u);
-      } else {
-        router.push("/login");
-      }
+      if (u) setUser(u);
+      else router.push("/login");
     });
-
     return () => unsubscribe();
   }, [router]);
 
-  // 🔄 Realtime listener for grocery list
+  // Firestore listener for items
   useEffect(() => {
-    if (!user) return; // only listen when user is logged in
-
-    const q = query(collection(db, "groceryList"));
-    const unsubscribe = onSnapshot(q, (snapshot) => {
+    if (!user) return;
+    const colRef = collection(db, `users/${user.uid}/lists/${listId}/items`);
+    const unsubscribe = onSnapshot(colRef, (snapshot) => {
       const data = snapshot.docs.map((doc) => ({
         id: doc.id,
         ...(doc.data() as Omit<GroceryItem, "id">),
       }));
       setItems(data);
     });
-
     return () => unsubscribe();
-  }, [user]);
+  }, [user, listId]);
 
-  // If user not loaded yet
   if (!user) return <p className="text-center mt-10">Loading...</p>;
 
-
-
-  // ➕ Add new item
   const addItem = async () => {
     if (!newItem.trim()) return;
-
-    await addDoc(collection(db, "groceryList"), {
+    await addDoc(collection(db, `users/${user.uid}/lists/${listId}/items`), {
       name: newItem,
       checked: false,
     });
-
     setNewItem("");
   };
 
-  // ☑️ Toggle item checked
   const toggleItem = async (item: GroceryItem) => {
-    const docRef = doc(db, "groceryList", item.id);
-    await updateDoc(docRef, {
-      checked: !item.checked,
-    });
+    const docRef = doc(db, `users/${user.uid}/lists/${listId}/items/${item.id}`);
+    await updateDoc(docRef, { checked: !item.checked });
   };
 
-  // ❌ Delete item
   const deleteItem = async (item: GroceryItem) => {
-    const docRef = doc(db, "groceryList", item.id);
+    const docRef = doc(db, `users/${user.uid}/lists/${listId}/items/${item.id}`);
     await deleteDoc(docRef);
+  };
+
+  const logout = async () => {
+    await auth.signOut();
+    router.push("/login");
   };
 
   return (
     <div className="max-w-md mx-auto mt-16 p-4">
-      <h1 className="text-3xl font-bold text-center mb-6">🛒 Grocery List</h1>
-        
+      <div className="flex justify-between items-center mb-6">
+        <h1 className="text-3xl font-bold">🛒 {listId}</h1>
         <button
-          onClick={async () => {
-            await auth.signOut();
-            router.push("/login");
-          }}
+          onClick={logout}
           className="bg-red-500 text-white px-3 py-1 rounded"
         >
           Logout
         </button>
+      </div>
+
       <div className="flex mb-4">
         <input
           type="text"
@@ -116,10 +105,7 @@ export default function Home() {
 
       <ul>
         {items.map((item) => (
-          <li
-            key={item.id}
-            className="flex justify-between items-center mb-2"
-          >
+          <li key={item.id} className="flex justify-between items-center mb-2">
             <div>
               <input
                 type="checkbox"
@@ -127,13 +113,10 @@ export default function Home() {
                 onChange={() => toggleItem(item)}
                 className="mr-2"
               />
-              <span
-                className={item.checked ? "line-through text-gray-400" : ""}
-              >
+              <span className={item.checked ? "line-through text-gray-400" : ""}>
                 {item.name}
               </span>
             </div>
-
             <button
               onClick={() => deleteItem(item)}
               className="text-red-500 font-bold"
