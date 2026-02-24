@@ -10,6 +10,7 @@ import {
   doc,
   updateDoc,
   deleteDoc,
+  getDoc
 } from "firebase/firestore";
 
 interface GroceryItem {
@@ -25,6 +26,7 @@ export default function GroceryListPage() {
   const [user, setUser] = useState<any>(null);
   const [items, setItems] = useState<GroceryItem[]>([]);
   const [newItem, setNewItem] = useState("");
+  const [listName, setListName] = useState("");
 
   // Auth listener
   useEffect(() => {
@@ -34,6 +36,21 @@ export default function GroceryListPage() {
     });
     return () => unsubscribe();
   }, [router]);
+
+  useEffect(() => {
+  if (!user || !listId) return;
+
+  const fetchListName = async () => {
+    const docRef = doc(db, `users/${user.uid}/lists/${listId}`);
+    const docSnap = await getDoc(docRef);
+
+    if (docSnap.exists()) {
+      setListName(docSnap.data().name);
+    }
+  };
+
+  fetchListName();
+}, [user, listId]);
 
   // Firestore listener for items
   useEffect(() => {
@@ -78,7 +95,7 @@ export default function GroceryListPage() {
   return (
     <div className="max-w-md mx-auto mt-16 p-4">
       <div className="flex justify-between items-center mb-6">
-        <h1 className="text-3xl font-bold">🛒 {listId}</h1>
+        <h1 className="text-3xl font-bold">🛒 {listName || "Loading..." }</h1>
         <button
           onClick={logout}
           className="bg-red-500 text-white px-3 py-1 rounded"
