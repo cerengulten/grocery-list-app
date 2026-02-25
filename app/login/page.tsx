@@ -1,8 +1,12 @@
 "use client";
 
 import { useState } from "react";
-import { auth } from "../../src/firebase";
-import { createUserWithEmailAndPassword, signInWithEmailAndPassword } from "firebase/auth";
+import { auth, db } from "../../src/firebase";
+import {
+  createUserWithEmailAndPassword,
+  signInWithEmailAndPassword,
+} from "firebase/auth";
+import { doc, setDoc, serverTimestamp } from "firebase/firestore";
 import { useRouter } from "next/navigation";
 
 export default function LoginPage() {
@@ -18,11 +22,18 @@ export default function LoginPage() {
 
     try {
       if (isRegister) {
-        await createUserWithEmailAndPassword(auth, email, password);
+        const cred = await createUserWithEmailAndPassword(auth, email, password);
+
+        // 👇 store profile so we can "share by email"
+        await setDoc(doc(db, "users", cred.user.uid), {
+          email: email.trim().toLowerCase(),
+          createdAt: serverTimestamp(),
+        });
       } else {
         await signInWithEmailAndPassword(auth, email, password);
       }
-      router.push("/dashboard");
+
+      router.push("/");
     } catch (err: any) {
       setError(err.message);
     }

@@ -2,142 +2,122 @@
 
 import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
-import { db, auth } from "../src/firebase";
+import { auth, db } from "../src/firebase";
 import {
   collection,
   addDoc,
-  query,
   onSnapshot,
   doc,
-  updateDoc,
   deleteDoc,
+  serverTimestamp,
+  query,
+  orderBy,
+  where,
 } from "firebase/firestore";
 
-interface GroceryItem {
+type GroceryList = {
   id: string;
   name: string;
-  checked: boolean;
-}
+  ownerId: string;
+  memberIds: string[];
+  createdAt?: any;
+};
 
 export default function Home() {
-  const [user, setUser] = useState<any>(null);
-  const [items, setItems] = useState<GroceryItem[]>([]);
-  const [newItem, setNewItem] = useState("");
   const router = useRouter();
+  const [user, setUser] = useState<any>(null);
+  const [lists, setLists] = useState<GroceryList[]>([]);
+  const [newList, setNewList] = useState("");
 
-  // 🔑 Auth listener
   useEffect(() => {
-    const unsubscribe = auth.onAuthStateChanged((u) => {
-      if (u) {
-        setUser(u);
-      } else {
+    const unsub = auth.onAuthStateChanged((u) => {
+      if (!u) {
         router.push("/login");
+        return;
       }
+      setUser(u);
     });
-
-    return () => unsubscribe();
+    return () => unsub();
   }, [router]);
 
-  // 🔄 Realtime listener for grocery list
   useEffect(() => {
-    if (!user) return; // only listen when user is logged in
+    if (!user) return;
 
-    const q = query(collection(db, "groceryList"));
-    const unsubscribe = onSnapshot(q, (snapshot) => {
-      const data = snapshot.docs.map((doc) => ({
-        id: doc.id,
-        ...(doc.data() as Omit<GroceryItem, "id">),
-      }));
-      setItems(data);
+    const listsRef = collection(db, "lists");
+    const q = query(
+      listsRef,
+      where("memberIds", "array-contains", user.uid),
+      orderBy("createdAt", "desc")
+    );
+
+    const unsub = onSnapshot(q, (snap) => {
+      setLists(
+        snap.docs.map((d) => ({
+          id: d.id,
+          ...(d.data() as any),
+        }))
+      );
     });
 
-    return () => unsubscribe();
+    return () => unsub();
   }, [user]);
 
-  // If user not loaded yet
   if (!user) return <p className="text-center mt-10">Loading...</p>;
 
+  const createList = async () => {
+    const name = newList.trim();
+    if (!name) return;
 
-
-  // ➕ Add new item
-  const addItem = async () => {
-    if (!newItem.trim()) return;
-
-    await addDoc(collection(db, "groceryList"), {
-      name: newItem,
-      checked: false,
+    await addDoc(collection(db, "lists"), {
+      name,
+      ownerId: user.uid,
+      memberIds: [user.uid],
+      createdAt: serverTimestamp(),
     });
 
-    setNewItem("");
+    setNewList("");
   };
 
-  // ☑️ Toggle item checked
-  const toggleItem = async (item: GroceryItem) => {
-    const docRef = doc(db, "groceryList", item.id);
-    await updateDoc(docRef, {
-      checked: !item.checked,
-    });
+  const openList = (listId: string) => router.push(`/list/${listId}`);
+
+  const deleteList = async (listId: string) => {
+    // simple: only delete if you're owner in rules (we'll do rules next)
+    await deleteDoc(doc(db, "lists", listId));
   };
 
-  // ❌ Delete item
-  const deleteItem = async (item: GroceryItem) => {
-    const docRef = doc(db, "groceryList", item.id);
-    await deleteDoc(docRef);
+  const logout = async () => {
+    await auth.signOut();
+    router.push("/login");
   };
 
   return (
     <div className="max-w-md mx-auto mt-16 p-4">
-      <h1 className="text-3xl font-bold text-center mb-6">🛒 Grocery List</h1>
-        
-        <button
-          onClick={async () => {
-            await auth.signOut();
-            router.push("/login");
-          }}
-          className="bg-red-500 text-white px-3 py-1 rounded"
-        >
+      <div className="flex justify-between items-center mb-6">
+        <h1 className="text-3xl font-bold">📝 My Lists</h1>
+        <button onClick={logout} className="bg-red-500 text-white px-3 py-1 rounded">
           Logout
         </button>
+      </div>
+
       <div className="flex mb-4">
         <input
-          type="text"
-          value={newItem}
-          onChange={(e) => setNewItem(e.target.value)}
-          placeholder="Add new item..."
+          value={newList}
+          onChange={(e) => setNewList(e.target.value)}
+          placeholder="New list name..."
           className="flex-1 border p-2 rounded-l"
         />
-        <button
-          onClick={addItem}
-          className="bg-blue-500 text-white px-4 rounded-r"
-        >
-          Add
+        <button onClick={createList} className="bg-blue-500 text-white px-4 rounded-r">
+          Create
         </button>
       </div>
 
       <ul>
-        {items.map((item) => (
-          <li
-            key={item.id}
-            className="flex justify-between items-center mb-2"
-          >
-            <div>
-              <input
-                type="checkbox"
-                checked={item.checked}
-                onChange={() => toggleItem(item)}
-                className="mr-2"
-              />
-              <span
-                className={item.checked ? "line-through text-gray-400" : ""}
-              >
-                {item.name}
-              </span>
-            </div>
-
-            <button
-              onClick={() => deleteItem(item)}
-              className="text-red-500 font-bold"
-            >
+        {lists.map((list) => (
+          <li key={list.id} className="flex justify-between items-center mb-2 p-2 border rounded hover:bg-gray-100">
+            <button onClick={() => openList(list.id)} className="text-left flex-1">
+              {list.name}
+            </button>
+            <button onClick={() => deleteList(list.id)} className="text-red-500 font-bold ml-3">
               X
             </button>
           </li>
