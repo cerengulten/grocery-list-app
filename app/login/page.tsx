@@ -1,80 +1,176 @@
 "use client";
 
-import { useState } from "react";
-import { auth, db } from "../../src/firebase";
-import {
-  createUserWithEmailAndPassword,
-  signInWithEmailAndPassword,
-} from "firebase/auth";
-import { doc, setDoc, serverTimestamp } from "firebase/firestore";
+import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
+import { auth } from "../../src/firebase";
+import {
+  GoogleAuthProvider,
+  signInWithPopup,
+  signInWithEmailAndPassword,
+  createUserWithEmailAndPassword,
+} from "firebase/auth";
+
+function friendlyAuthError(msg: string) {
+  const m = (msg || "").toLowerCase();
+  if (m.includes("auth/invalid-email")) return "That email looks invalid.";
+  if (m.includes("auth/user-not-found")) return "No account found with that email.";
+  if (m.includes("auth/wrong-password")) return "Wrong password.";
+  if (m.includes("auth/email-already-in-use")) return "This email is already in use.";
+  if (m.includes("auth/weak-password")) return "Password should be at least 6 characters.";
+  if (m.includes("auth/too-many-requests")) return "Too many attempts. Try again later.";
+  return msg || "Authentication failed.";
+}
 
 export default function LoginPage() {
-  const [email, setEmail] = useState("");
-  const [password, setPassword] = useState("");
-  const [isRegister, setIsRegister] = useState(false);
-  const [error, setError] = useState("");
   const router = useRouter();
 
-  const handleSubmit = async (e: React.FormEvent) => {
-    e.preventDefault();
-    setError("");
+  const [mode, setMode] = useState<"login" | "signup">("login");
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
+
+  const [error, setError] = useState("");
+  const [loading, setLoading] = useState(false);
+
+  useEffect(() => {
+    const unsub = auth.onAuthStateChanged((u) => {
+      if (u) router.push("/");
+    });
+    return () => unsub();
+  }, [router]);
+
+  const loginWithGoogle = async () => {
+    try {
+      setError("");
+      setLoading(true);
+      const provider = new GoogleAuthProvider();
+      await signInWithPopup(auth, provider);
+      router.push("/");
+    } catch (e: any) {
+      console.error(e);
+      setError(friendlyAuthError(e?.code || e?.message));
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const submitEmailPassword = async () => {
+    const e = email.trim();
+    const p = password;
+
+    if (!e || !p) {
+      setError("Please enter email and password.");
+      return;
+    }
 
     try {
-      if (isRegister) {
-        const cred = await createUserWithEmailAndPassword(auth, email, password);
+      setError("");
+      setLoading(true);
 
-        // 👇 store profile so we can "share by email"
-        await setDoc(doc(db, "users", cred.user.uid), {
-          email: email.trim().toLowerCase(),
-          createdAt: serverTimestamp(),
-        });
+      if (mode === "login") {
+        await signInWithEmailAndPassword(auth, e, p);
       } else {
-        await signInWithEmailAndPassword(auth, email, password);
+        await createUserWithEmailAndPassword(auth, e, p);
       }
 
       router.push("/");
-    } catch (err: any) {
-      setError(err.message);
+    } catch (e: any) {
+      console.error(e);
+      setError(friendlyAuthError(e?.code || e?.message));
+    } finally {
+      setLoading(false);
     }
   };
 
   return (
-    <div className="max-w-md mx-auto mt-20 p-4 border rounded shadow">
-      <h1 className="text-2xl font-bold mb-4">{isRegister ? "Register" : "Login"}</h1>
-      {error && <p className="text-red-500 mb-2">{error}</p>}
+    <div className="max-w-md mx-auto mt-20 p-6 border rounded shadow-sm">
+      <h1 className="text-2xl font-bold mb-2">
+        {mode === "login" ? "Login" : "Create account"}
+      </h1>
+      <p className="text-sm text-gray-600 mb-4">
+        {mode === "login"
+          ? "Welcome back 👋"
+          : "Make an account, then pick your username on the next step."}
+      </p>
 
-      <form onSubmit={handleSubmit} className="flex flex-col gap-3">
+      {error && <p className="text-red-500 text-sm mb-3">{error}</p>}
+
+      {/* Email/password */}
+      <div className="space-y-3 mb-4">
         <input
-          type="email"
-          placeholder="Email"
           value={email}
           onChange={(e) => setEmail(e.target.value)}
-          className="border p-2 rounded"
-          required
+          placeholder="Email"
+          type="email"
+          className="w-full border p-2 rounded"
+          autoComplete="email"
         />
         <input
-          type="password"
-          placeholder="Password"
           value={password}
           onChange={(e) => setPassword(e.target.value)}
-          className="border p-2 rounded"
-          required
+          placeholder="Password (min 6 chars)"
+          type="password"
+          className="w-full border p-2 rounded"
+          autoComplete={mode === "login" ? "current-password" : "new-password"}
         />
-        <button type="submit" className="bg-blue-500 text-white p-2 rounded">
-          {isRegister ? "Register" : "Login"}
-        </button>
-      </form>
-
-      <p className="mt-3 text-sm">
-        {isRegister ? "Already have an account?" : "No account yet?"}{" "}
         <button
-          onClick={() => setIsRegister(!isRegister)}
-          className="text-blue-500 underline"
+          onClick={submitEmailPassword}
+          disabled={loading}
+          className="w-full bg-blue-500 text-white px-4 py-2 rounded disabled:opacity-60"
         >
-          {isRegister ? "Login" : "Register"}
+          {loading
+            ? "Please wait..."
+            : mode === "login"
+            ? "Login"
+            : "Sign up"}
         </button>
-      </p>
+      </div>
+
+      {/* Divider */}
+      <div className="flex items-center gap-3 my-4">
+        <div className="h-px bg-gray-200 flex-1" />
+        <span className="text-xs text-gray-500">OR</span>
+        <div className="h-px bg-gray-200 flex-1" />
+      </div>
+
+      {/* Google */}
+      <button
+        onClick={loginWithGoogle}
+        disabled={loading}
+        className="w-full border px-4 py-2 rounded disabled:opacity-60"
+      >
+        Continue with Google
+      </button>
+
+      {/* Toggle mode */}
+      <div className="text-sm mt-4">
+        {mode === "login" ? (
+          <p>
+            Don’t have an account?{" "}
+            <button
+              className="underline"
+              onClick={() => {
+                setError("");
+                setMode("signup");
+              }}
+            >
+              Sign up
+            </button>
+          </p>
+        ) : (
+          <p>
+            Already have an account?{" "}
+            <button
+              className="underline"
+              onClick={() => {
+                setError("");
+                setMode("login");
+              }}
+            >
+              Login
+            </button>
+          </p>
+        )}
+      </div>
     </div>
   );
 }

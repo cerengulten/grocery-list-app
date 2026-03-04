@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useParams, useRouter } from "next/navigation";
 import { auth, db } from "../../../src/firebase";
 import {
@@ -14,80 +14,146 @@ import {
   orderBy,
   query,
   serverTimestamp,
-  where,
-  getDocs,
-  arrayUnion
+  arrayUnion,
 } from "firebase/firestore";
 
-interface GroceryItem {
+type GroceryItem = {
   id: string;
   name: string;
   checked: boolean;
   createdAt?: any;
-}
+};
 
 export default function GroceryListPage() {
   const router = useRouter();
-  const params = useParams<{ listId: string }>();
-  const listId = params?.listId;
+  const params = useParams();
+  const listId = useMemo(() => {
+    const raw = (params as any)?.listId;
+    return typeof raw === "string" ? raw : null;
+  }, [params]);
 
   const [user, setUser] = useState<any>(null);
+  const [loading, setLoading] = useState(true);
+  const [authError, setAuthError] = useState<string>("");
+
   const [items, setItems] = useState<GroceryItem[]>([]);
   const [newItem, setNewItem] = useState("");
   const [listName, setListName] = useState("");
-  // Couple Mode states  
-  const [shareEmail, setShareEmail] = useState("");
-  const [shareError, setShareError] = useState("");
 
-  // 🔐 Auth listener
+  // Share by username
+  const [shareUsername, setShareUsername] = useState("");
+  const [shareError, setShareError] = useState("");
+  const [shareLoading, setShareLoading] = useState(false);
+
+  // 🔐 Auth + username gate
   useEffect(() => {
-    const unsub = auth.onAuthStateChanged((u) => {
-      if (!u) {
-        router.push("/login");
-        return;
+    const unsub = auth.onAuthStateChanged(async (u) => {
+      try {
+        setAuthError("");
+
+        if (!u) {
+          router.push("/login");
+          return;
+        }
+
+        const userSnap = await getDoc(doc(db, "users", u.uid));
+        const username = userSnap.exists()
+          ? (userSnap.data() as any).username
+          : null;
+
+        if (!username) {
+          router.push("/setup");
+          return;
+        }
+
+        setUser(u);
+      } catch (e: any) {
+        console.error("Auth/username gate failed:", e);
+        setAuthError(e?.message || "Auth check failed");
+      } finally {
+        setLoading(false);
       }
-      setUser(u);
     });
+
     return () => unsub();
   }, [router]);
 
-  // 📛 Fetch list name from GLOBAL lists collection
+  // 📛 Fetch list name + (optional) membership check
   useEffect(() => {
-    if (!listId) return;
+    if (!listId || !user) return;
 
     const fetchList = async () => {
-      const listRef = doc(db, "lists", listId);
-      const snap = await getDoc(listRef);
+      try {
+        const listRef = doc(db, "lists", listId);
+        const snap = await getDoc(listRef);
 
-      if (snap.exists()) {
-        setListName((snap.data() as any).name || "");
-      } else {
-        router.push("/");
+        if (!snap.exists()) {
+          router.push("/");
+          return;
+        }
+
+        const data = snap.data() as any;
+
+        // Optional UX check (security should still be in Firestore rules)
+        if (Array.isArray(data.memberIds) && !data.memberIds.includes(user.uid)) {
+          setAuthError("You don't have access to this list.");
+          return;
+        }
+
+        setListName((data.name as string) || "");
+      } catch (e: any) {
+        console.error("Fetch list failed:", e);
+        setAuthError(e?.message || "Failed to load list");
       }
     };
 
     fetchList();
-  }, [listId, router]);
+  }, [listId, user, router]);
 
-  // 🔄 Realtime items listener
+  // 🔄 Realtime items
   useEffect(() => {
-    if (!listId) return;
+    if (!listId || !user) return;
 
     const itemsRef = collection(db, "lists", listId, "items");
     const q = query(itemsRef, orderBy("createdAt", "desc"));
 
-    const unsub = onSnapshot(q, (snapshot) => {
-      const data = snapshot.docs.map((d) => ({
-        id: d.id,
-        ...(d.data() as Omit<GroceryItem, "id">),
-      }));
-      setItems(data);
-    });
+    const unsub = onSnapshot(
+      q,
+      (snapshot) => {
+        const data: GroceryItem[] = snapshot.docs.map((d) => ({
+          id: d.id,
+          ...(d.data() as Omit<GroceryItem, "id">),
+        }));
+        setItems(data);
+      },
+      (err) => {
+        console.error("Items snapshot error:", err);
+        setAuthError(err?.message || "Failed to load items");
+      }
+    );
 
     return () => unsub();
-  }, [listId]);
+  }, [listId, user]);
 
-  if (!user) return <p className="text-center mt-10">Loading...</p>;
+  if (loading) return <p className="text-center mt-10">Loading...</p>;
+
+  if (authError) {
+    return (
+      <div className="max-w-md mx-auto mt-16 p-4">
+        <p className="text-red-600 font-semibold">Something went wrong:</p>
+        <pre className="text-xs mt-2 whitespace-pre-wrap">{authError}</pre>
+
+        <button
+          onClick={() => auth.signOut().then(() => router.push("/login"))}
+          className="mt-4 bg-red-500 text-white px-3 py-1 rounded"
+        >
+          Go to login
+        </button>
+      </div>
+    );
+  }
+
+  if (!user) return <p className="text-center mt-10">Redirecting...</p>;
   if (!listId) return <p className="text-center mt-10">List not found.</p>;
 
   const addItem = async () => {
@@ -104,51 +170,56 @@ export default function GroceryListPage() {
   };
 
   const toggleItem = async (item: GroceryItem) => {
-    const itemRef = doc(db, "lists", listId, "items", item.id);
-    await updateDoc(itemRef, { checked: !item.checked });
+    await updateDoc(doc(db, "lists", listId, "items", item.id), {
+      checked: !item.checked,
+    });
   };
 
   const deleteItem = async (item: GroceryItem) => {
-    const itemRef = doc(db, "lists", listId, "items", item.id);
-    await deleteDoc(itemRef);
+    await deleteDoc(doc(db, "lists", listId, "items", item.id));
+  };
+
+  const shareWithUsername = async () => {
+    try {
+      setShareError("");
+      setShareLoading(true);
+
+      const uname = shareUsername.trim().toLowerCase();
+      if (!uname) return;
+
+      const unameSnap = await getDoc(doc(db, "usernames", uname));
+      if (!unameSnap.exists()) {
+        setShareError("No user found with that username.");
+        return;
+      }
+
+      const partnerUid = (unameSnap.data() as any).uid;
+
+      if (partnerUid === user.uid) {
+        setShareError("You can’t share with yourself 😄");
+        return;
+      }
+
+      await updateDoc(doc(db, "lists", listId), {
+        memberIds: arrayUnion(partnerUid),
+      });
+
+      setShareUsername("");
+    } catch (e: any) {
+      setShareError(e?.message || "Failed to share.");
+    } finally {
+      setShareLoading(false);
+    }
   };
 
   const logout = async () => {
     await auth.signOut();
     router.push("/login");
   };
-  // share mode function 
-  const shareWithEmail = async () => {
-  try {
-    setShareError("");
-
-    const email = shareEmail.trim().toLowerCase();
-    if (!email) return;
-
-    // 1️⃣ Find user by email
-    const q = query(collection(db, "users"), where("email", "==", email));
-    const snap = await getDocs(q);
-
-    if (snap.empty) {
-      setShareError("No user found with this email.");
-      return;
-    }
-
-    const partnerUid = snap.docs[0].id;
-
-    // 2️⃣ Add them to memberIds
-    await updateDoc(doc(db, "lists", listId), {
-      memberIds: arrayUnion(partnerUid),
-    });
-
-    setShareEmail("");
-  } catch (err: any) {
-    setShareError(err.message);
-  }
-};
 
   return (
     <div className="max-w-md mx-auto mt-16 p-4">
+      {/* Header */}
       <div className="flex justify-between items-center mb-6">
         <div>
           <button onClick={() => router.push("/")} className="text-sm underline mb-2">
@@ -161,29 +232,33 @@ export default function GroceryListPage() {
           Logout
         </button>
       </div>
-      <div className="mb-4 border p-3 rounded bg-black-50">
-    <h2 className="font-semibold mb-2">Share this list 💞</h2>
 
-    <div className="flex gap-2">
-      <input
-        type="email"
-        placeholder="Partner email..."
-        value={shareEmail}
-        onChange={(e) => setShareEmail(e.target.value)}
-        className="flex-1 border p-2 rounded"
-      />
-      <button
-        onClick={shareWithEmail}
-        className="bg-green-500 text-white px-4 rounded"
-      >
-        Share
-      </button>
-    </div>
+      {/* Share section */}
+      <div className="mb-4 border p-3 rounded bg-gray-50">
+        <h2 className="font-semibold mb-2">Invite partner 💕</h2>
 
-    {shareError && (
-      <p className="text-red-500 text-sm mt-2">{shareError}</p>
-    )}
-    </div>
+        <div className="flex gap-2">
+          <input
+            value={shareUsername}
+            onChange={(e) => setShareUsername(e.target.value)}
+            placeholder="Partner username (e.g. biscotti)"
+            className="flex-1 border p-2 rounded"
+            autoCapitalize="none"
+            autoCorrect="off"
+          />
+          <button
+            onClick={shareWithUsername}
+            disabled={shareLoading}
+            className="bg-green-500 text-white px-4 rounded disabled:opacity-60"
+          >
+            {shareLoading ? "Sharing..." : "Share"}
+          </button>
+        </div>
+
+        {shareError && <p className="text-red-500 text-sm mt-2">{shareError}</p>}
+      </div>
+
+      {/* Add item */}
       <div className="flex mb-4">
         <input
           value={newItem}
@@ -196,6 +271,7 @@ export default function GroceryListPage() {
         </button>
       </div>
 
+      {/* Items */}
       <ul>
         {items.map((item) => (
           <li key={item.id} className="flex justify-between items-center mb-2">
@@ -214,6 +290,7 @@ export default function GroceryListPage() {
             <button
               onClick={() => deleteItem(item)}
               className="text-red-500 font-bold"
+              title="Delete item"
             >
               X
             </button>
