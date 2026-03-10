@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useState, useRef } from "react";
 import { useParams, useRouter } from "next/navigation";
 import { auth, db } from "../../../src/firebase";
 import {
@@ -15,8 +15,8 @@ import {
   query,
   serverTimestamp,
   arrayUnion,
+  arrayRemove,
 } from "firebase/firestore";
-
 type GroceryItem = {
   id: string;
   name: string;
@@ -39,11 +39,15 @@ export default function GroceryListPage() {
   const [items, setItems] = useState<GroceryItem[]>([]);
   const [newItem, setNewItem] = useState("");
   const [listName, setListName] = useState("");
+  const [ownerId, setOwnerId] = useState("");
 
   // Share by username
   const [shareUsername, setShareUsername] = useState("");
   const [shareError, setShareError] = useState("");
   const [shareLoading, setShareLoading] = useState(false);
+
+  const [isLeaving, setIsLeaving] = useState(false);
+  const isLeavingRef = useRef(false);
 
   // 🔐 Auth + username gate
   useEffect(() => {
@@ -68,9 +72,10 @@ export default function GroceryListPage() {
 
         setUser(u);
       } catch (e: any) {
-        console.error("Auth/username gate failed:", e);
-        setAuthError(e?.message || "Auth check failed");
-      } finally {
+          if (isLeavingRef.current) return;
+          console.error("Auth/username gate failed:", e);
+          setAuthError(e?.message || "Auth check failed");
+        } finally {
         setLoading(false);
       }
     });
@@ -81,7 +86,7 @@ export default function GroceryListPage() {
   // 📛 Fetch list name + (optional) membership check
   useEffect(() => {
     if (!listId || !user) return;
-
+    if (isLeavingRef.current) return;
     const fetchList = async () => {
       try {
         const listRef = doc(db, "lists", listId);
@@ -93,7 +98,7 @@ export default function GroceryListPage() {
         }
 
         const data = snap.data() as any;
-
+        
         // Optional UX check (security should still be in Firestore rules)
         if (Array.isArray(data.memberIds) && !data.memberIds.includes(user.uid)) {
           setAuthError("You don't have access to this list.");
@@ -101,14 +106,16 @@ export default function GroceryListPage() {
         }
 
         setListName((data.name as string) || "");
+        setOwnerId(data.ownerId || "");
       } catch (e: any) {
+        if (isLeavingRef.current) return;
         console.error("Fetch list failed:", e);
         setAuthError(e?.message || "Failed to load list");
       }
     };
 
     fetchList();
-  }, [listId, user, router]);
+  }, [listId, user, router, isLeaving]);
 
   // 🔄 Realtime items
   useEffect(() => {
@@ -120,6 +127,8 @@ export default function GroceryListPage() {
     const unsub = onSnapshot(
       q,
       (snapshot) => {
+        if (isLeavingRef.current) return;
+
         const data: GroceryItem[] = snapshot.docs.map((d) => ({
           id: d.id,
           ...(d.data() as Omit<GroceryItem, "id">),
@@ -127,15 +136,18 @@ export default function GroceryListPage() {
         setItems(data);
       },
       (err) => {
+        if (isLeavingRef.current) return;
         console.error("Items snapshot error:", err);
         setAuthError(err?.message || "Failed to load items");
       }
     );
 
     return () => unsub();
-  }, [listId, user]);
+  }, [listId, user, isLeaving]);
 
   if (loading) return <p className="text-center mt-10">Loading...</p>;
+
+  if (isLeaving) return null;
 
   if (authError) {
     return (
@@ -144,11 +156,11 @@ export default function GroceryListPage() {
         <pre className="text-xs mt-2 whitespace-pre-wrap">{authError}</pre>
 
         <button
-          onClick={() => auth.signOut().then(() => router.push("/login"))}
-          className="mt-4 bg-red-500 text-white px-3 py-1 rounded"
-        >
-          Go to login
-        </button>
+            onClick={() => router.push("/")}
+            className="mt-4 bg-red-500 text-white px-3 py-1 rounded"
+          >
+            Back to home
+          </button>
       </div>
     );
   }
@@ -178,6 +190,52 @@ export default function GroceryListPage() {
   const deleteItem = async (item: GroceryItem) => {
     await deleteDoc(doc(db, "lists", listId, "items", item.id));
   };
+  const leaveList = async () => {
+    if (!user || !listId) return;
+    if (ownerId === user.uid) return;
+
+    const ok = window.confirm("Leave this list? You will lose access.");
+    if (!ok) return;
+
+    try {
+      setIsLeaving(true);
+      isLeavingRef.current = true;
+
+      const listRef = doc(db, "lists", listId);
+      const listSnap = await getDoc(listRef);
+
+      if (!listSnap.exists()) {
+        router.replace("/");
+        return;
+      }
+
+      const listData = listSnap.data() as any;
+
+      // navigate away first in UI terms
+      router.replace("/");
+
+      // then perform firestore updates
+      await updateDoc(listRef, {
+        memberIds: arrayRemove(user.uid),
+      });
+
+      if (listData.ownerId && listData.ownerId !== user.uid) {
+        await addDoc(collection(db, "users", listData.ownerId, "notifications"), {
+          type: "member_left_list",
+          listId,
+          listName: listData.name || "",
+          leftUserId: user.uid,
+          createdAt: serverTimestamp(),
+          read: false,
+        });
+      }
+    } catch (e: any) {
+      console.error("Leave list failed:", e);
+      isLeavingRef.current = false;
+      setIsLeaving(false);
+      setAuthError(e?.message || "Failed to leave list");
+    }
+};
 
   const shareWithUsername = async () => {
     try {
@@ -231,6 +289,16 @@ export default function GroceryListPage() {
         <button onClick={logout} className="bg-red-500 text-white px-3 py-1 rounded">
           Logout
         </button>
+        {user.uid !== ownerId && (
+          <div className="flex gap-2 mb-4">
+            <button
+              onClick={leaveList}
+              className="bg-yellow-500 text-white px-3 py-1 rounded"
+            >
+              Leave list
+            </button>
+          </div>
+        )}
       </div>
 
       {/* Share section */}
