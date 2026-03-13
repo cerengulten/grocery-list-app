@@ -16,6 +16,7 @@ import {
   serverTimestamp,
   arrayUnion,
   arrayRemove,
+  writeBatch,
 } from "firebase/firestore";
 type GroceryItem = {
   id: string;
@@ -211,16 +212,18 @@ export default function GroceryListPage() {
 
       const listData = listSnap.data() as any;
 
-      // navigate away first in UI terms
-      router.replace("/");
+      const batch = writeBatch(db);
 
-      // then perform firestore updates
-      await updateDoc(listRef, {
+      // 1) remove current user from list members
+      batch.update(listRef, {
         memberIds: arrayRemove(user.uid),
       });
 
+      // 2) create notification for owner
       if (listData.ownerId && listData.ownerId !== user.uid) {
-        await addDoc(collection(db, "users", listData.ownerId, "notifications"), {
+        const notifRef = doc(collection(db, "users", listData.ownerId, "notifications"));
+
+        batch.set(notifRef, {
           type: "member_left_list",
           listId,
           listName: listData.name || "",
@@ -229,6 +232,10 @@ export default function GroceryListPage() {
           read: false,
         });
       }
+
+      await batch.commit();
+
+      router.replace("/");
     } catch (e: any) {
       console.error("Leave list failed:", e);
       isLeavingRef.current = false;
