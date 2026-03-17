@@ -16,6 +16,7 @@ import {
   orderBy,
   where,
   limit,
+  arrayUnion,
 } from "firebase/firestore";
 
 type GroceryList = {
@@ -36,6 +37,17 @@ type AppNotification = {
   read?: boolean;
 };
 
+type Invitation = {
+  id: string;
+  listId: string;
+  listName: string;
+  fromUserId: string;
+  fromUserEmail: string;
+  toUserId: string; 
+  status: "pending" | "accepted" | "declined";
+  createdAt?: any;
+};
+
 
 export default function Home() {
   const router = useRouter();
@@ -52,6 +64,9 @@ export default function Home() {
   const [showNotifications, setShowNotifications] = useState(false);
 
   const unreadCount = notifications.filter((n) => !n.read).length;
+
+  // Invitation States 
+  const [invitations, setInvitations] = useState<Invitation[]>([]);
 
   // 🔐 Auth + username gate
   useEffect(() => {
@@ -141,6 +156,36 @@ export default function Home() {
     return () => unsub();
 }, [user]);
 
+
+  // Invitation Listener 
+  useEffect(() => {
+  if (!user) return;
+
+  const q = query(
+    collection(db, "invitations"),
+    where("toUserId", "==", user.uid),
+    where("status", "==", "pending"),
+    orderBy("createdAt", "desc")
+  );
+
+  const unsubscribe = onSnapshot(
+    q,
+    (snapshot) => {
+      const invites: Invitation[] = snapshot.docs.map((docSnap) => ({
+        id: docSnap.id,
+        ...(docSnap.data() as Omit<Invitation, "id">),
+      }));
+      setInvitations(invites);
+    },
+    (err) => {
+      console.error("Invitations snapshot error:", err);
+      setAuthError(err?.message || "Failed to load invitations");
+    }
+  );
+
+  return () => unsubscribe();
+}, [user]);
+
   if (loading) return <p className="text-center mt-10">Loading...</p>;
 
   if (authError) {
@@ -212,8 +257,40 @@ const markAllNotificationsAsRead = async () => {
     console.error("Failed to mark all notifications as read:", e);
   }
 };
+// to accept invitation 
+const acceptInvitation = async (invitation: Invitation) => {
+  try {
+    if (!user) return;
 
-  const logout = async () => {
+    const invitationRef = doc(db, "invitations", invitation.id);
+    const listRef = doc(db, "lists", invitation.listId);
+
+    await updateDoc(listRef, {
+      memberIds: arrayUnion(user.uid),
+    });
+
+    await updateDoc(invitationRef, {
+      status: "accepted",
+    });
+  } catch (e) {
+    console.error("Failed to accept invitation:", e);
+  }
+};
+// to decline invitation
+const declineInvitation = async (invitationId: string) => {
+  try {
+    if (!user) return;
+
+    const invitationRef = doc(db, "invitations", invitationId);
+
+    await updateDoc(invitationRef, {
+      status: "declined",
+    });
+  } catch (e) {
+    console.error("Failed to decline invitation:", e);
+  }
+};
+const logout = async () => {
     await auth.signOut();
     router.push("/login");
   };
@@ -298,6 +375,43 @@ const markAllNotificationsAsRead = async () => {
         >
           Create
         </button>
+      </div>
+      <div className="mb-6">
+        <h2 className="text-lg font-semibold mb-2">Pending Invitations</h2>
+
+        {invitations.length === 0 ? (
+          <p className="text-sm text-gray-500">No pending invitations.</p>
+        ) : (
+          <div className="space-y-3">
+            {invitations.map((invitation) => (
+              <div
+                key={invitation.id}
+                className="border rounded p-3 bg-gray-50"
+              >
+                <p className="text-sm mb-2">
+                  <strong>{invitation.fromUserEmail}</strong> invited you to join{" "}
+                  <strong>{invitation.listName}</strong>
+                </p>
+
+                <div className="flex gap-2">
+                  <button
+                    onClick={() => acceptInvitation(invitation)}
+                    className="bg-green-500 text-white px-3 py-1 rounded"
+                  >
+                    Accept
+                  </button>
+
+                  <button
+                    onClick={() => declineInvitation(invitation.id)}
+                    className="bg-gray-300 px-3 py-1 rounded"
+                  >
+                    Decline
+                  </button>
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
       </div>
 
       {lists.length === 0 ? (

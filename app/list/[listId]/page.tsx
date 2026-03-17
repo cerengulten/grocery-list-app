@@ -11,13 +11,18 @@ import {
   updateDoc,
   deleteDoc,
   getDoc,
+  getDocs,
   orderBy,
   query,
+  where,
+  limit,
   serverTimestamp,
   arrayUnion,
   arrayRemove,
   writeBatch,
+  setDoc,
 } from "firebase/firestore";
+
 type GroceryItem = {
   id: string;
   name: string;
@@ -245,37 +250,62 @@ export default function GroceryListPage() {
 };
 
   const shareWithUsername = async () => {
-    try {
-      setShareError("");
-      setShareLoading(true);
+  try {
+    setShareError("");
+    setShareLoading(true);
 
-      const uname = shareUsername.trim().toLowerCase();
-      if (!uname) return;
+    const uname = shareUsername.trim().toLowerCase();
+    if (!uname) return;
 
-      const unameSnap = await getDoc(doc(db, "usernames", uname));
-      if (!unameSnap.exists()) {
-        setShareError("No user found with that username.");
-        return;
-      }
-
-      const partnerUid = (unameSnap.data() as any).uid;
-
-      if (partnerUid === user.uid) {
-        setShareError("You can’t share with yourself 😄");
-        return;
-      }
-
-      await updateDoc(doc(db, "lists", listId), {
-        memberIds: arrayUnion(partnerUid),
-      });
-
-      setShareUsername("");
-    } catch (e: any) {
-      setShareError(e?.message || "Failed to share.");
-    } finally {
-      setShareLoading(false);
+    const unameSnap = await getDoc(doc(db, "usernames", uname));
+    if (!unameSnap.exists()) {
+      setShareError("No user found with that username.");
+      return;
     }
-  };
+
+    const partnerUid = (unameSnap.data() as any).uid;
+
+    if (partnerUid === user.uid) {
+      setShareError("You can’t share with yourself 😄");
+      return;
+    }
+
+    const listSnap = await getDoc(doc(db, "lists", listId));
+    if (!listSnap.exists()) {
+      setShareError("List not found.");
+      return;
+    }
+
+    const listData = listSnap.data() as any;
+    const memberIds = Array.isArray(listData.memberIds) ? listData.memberIds : [];
+
+    if (memberIds.includes(partnerUid)) {
+      setShareError("This user is already in the list.");
+      return;
+    }
+
+    const invitationId = `${listId}_${partnerUid}`;
+    const invitationRef = doc(db, "invitations", invitationId);
+
+
+    await setDoc(invitationRef, {
+      listId,
+      listName: listData.name || listName || "",
+      fromUserId: user.uid,
+      fromUserEmail: user.email || "",
+      toUserId: partnerUid,
+      status: "pending",
+      createdAt: serverTimestamp(),
+    });
+
+    setShareUsername("");
+  } catch (e: any) {
+    console.error("Failed to send invitation:", e);
+    setShareError(e?.message || "Failed to send invitation.");
+  } finally {
+    setShareLoading(false);
+  }
+};
 
   const logout = async () => {
     await auth.signOut();
@@ -326,7 +356,7 @@ export default function GroceryListPage() {
             disabled={shareLoading}
             className="bg-green-500 text-white px-4 rounded disabled:opacity-60"
           >
-            {shareLoading ? "Sharing..." : "Share"}
+            {shareLoading ? "Sending..." : "Invite"}
           </button>
         </div>
 
